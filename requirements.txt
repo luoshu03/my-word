@@ -2,4 +2,5 @@ streamlit
 pandas
 openpyxl
 python-Levenshtein
-invalid-syntax
+invalid
+syntax
