@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 import random
@@ -21,13 +22,15 @@ def init_session_state():
         'review_shuffle_seed': random.randint(1, 10000),
         'meaning_test_active': False, 'meaning_test_word': None,
         'meaning_user_input': '', 'meaning_test_result': None,
-        'mastered_words': {},  # {date: [word_list]}
+        'mastered_records': {},  # {date: [word_list]}
+        'perfect_words': [],
         'current_day_review': None,
-        'day_review_mode': 'mixed',  # mixed/meaning/spell/phrase_cn/phrase_en
+        'day_review_mode': 'mixed',
         'day_review_idx': 0,
         'day_review_items': [],
         'day_review_correct': 0,
         'day_review_show_res': False,
+        'learning_start_date': None  # 记录第一天学习日期
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -61,10 +64,10 @@ st.markdown(f"""
     .mindmap-example {{ background: linear-gradient(135deg, {'#3a1a2a' if st.session_state.night_mode else '#fce4ec'}, {'#4a2a3a' if st.session_state.night_mode else '#f8bbd0'}); border-left: 4px solid #e91e63; }}
     .phrase-important {{ background-color: #d32f2f; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-left: 6px; }}
     .example-box {{ background-color: {'#2a2a2a' if st.session_state.night_mode else '#f0f4f8'}; padding: 16px; border-radius: 12px; border-left: 5px solid #2c7da0; }}
-    .calendar-grid {{ display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; margin: 20px 0; }}
-    .calendar-day {{ background-color: {'#2d2d2d' if st.session_state.night_mode else '#fff'}; border: 1px solid {'#555' if st.session_state.night_mode else '#ddd'}; border-radius: 12px; padding: 12px 8px; text-align: center; cursor: pointer; transition: 0.2s; }}
-    .calendar-day:hover {{ background-color: {'#3a3a3a' if st.session_state.night_mode else '#e3f2fd'}; }}
-    .calendar-day.completed {{ background-color: #4caf50; color: white; }}
+    .day-grid {{ display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }}
+    .day-card {{ background-color: {'#2d2d2d' if st.session_state.night_mode else '#fff'}; border: 1px solid {'#555' if st.session_state.night_mode else '#ddd'}; border-radius: 16px; padding: 16px 12px; text-align: center; cursor: pointer; transition: 0.2s; min-width: 80px; }}
+    .day-card:hover {{ background-color: {'#3a3a3a' if st.session_state.night_mode else '#e3f2fd'}; }}
+    .day-card.completed {{ background-color: #4caf50; color: white; }}
     .reward-box {{ background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 30px; border-radius: 24px; text-align: center; margin: 20px 0; }}
     .stButton>button {{ width: 100%; height: 3rem; font-size: 1rem; border-radius: 10px; }}
 </style>
@@ -82,8 +85,9 @@ DEFAULT_DATA = {
     "mistake_book": {},
     "user_notes": {},
     "daily_plan": {"target": 20, "completed_today": 0},
-    "mastered_records": {},  # {date: [word_list]}
-    "perfect_words": []      # 正确3次以上的单词
+    "mastered_records": {},
+    "perfect_words": [],
+    "learning_start_date": None
 }
 
 def load_data():
@@ -96,11 +100,22 @@ def load_data():
             for w, info in data.get("mistake_book", {}).items():
                 if "correct_streak" not in info:
                     info["correct_streak"] = 0
+            # 同步到 session_state
+            if data.get("mastered_records"):
+                st.session_state.mastered_records = data["mastered_records"]
+            if data.get("perfect_words"):
+                st.session_state.perfect_words = data["perfect_words"]
+            if data.get("learning_start_date"):
+                st.session_state.learning_start_date = data["learning_start_date"]
             return data
     except:
         return DEFAULT_DATA.copy()
 
 def save_data(data):
+    # 同步 session 中的完美记录到 data
+    data["mastered_records"] = st.session_state.mastered_records
+    data["perfect_words"] = st.session_state.perfect_words
+    data["learning_start_date"] = st.session_state.learning_start_date
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -165,11 +180,31 @@ def record_correct_in_mistake(data, word):
             return True
     return False
 
+def add_to_perfect(word):
+    """将单词加入当日完美掌握记录"""
+    today = datetime.now().date().isoformat()
+    # 设置学习开始日期
+    if not st.session_state.learning_start_date:
+        st.session_state.learning_start_date = today
+    # 加入完美单词列表
+    if word not in st.session_state.perfect_words:
+        st.session_state.perfect_words.append(word)
+    # 加入当日掌握记录
+    if today not in st.session_state.mastered_records:
+        st.session_state.mastered_records[today] = []
+    if word not in st.session_state.mastered_records[today]:
+        st.session_state.mastered_records[today].append(word)
+    # 保存
+    data = load_data()
+    data["perfect_words"] = st.session_state.perfect_words
+    data["mastered_records"] = st.session_state.mastered_records
+    data["learning_start_date"] = st.session_state.learning_start_date
+    save_data(data)
+
 def extract_english_words(text):
     return list(set(re.findall(r'\b[a-zA-Z]{2,}\b', text.lower()))) if text else []
 
 def parse_phrases(phrase_str):
-    """解析短语字符串：格式 'oppose sth:反对某事; be opposed to:不赞成' """
     if not phrase_str: return []
     phrases = []
     for part in phrase_str.split(';'):
@@ -180,7 +215,6 @@ def parse_phrases(phrase_str):
     return phrases
 
 def parse_meanings(meaning_str):
-    """解析多个释义：'v.反抗;反对 n.反对派' -> [{'pos':'v.', 'defs':['反抗','反对']}, ...]"""
     if not meaning_str: return []
     results = []
     for part in meaning_str.split(';'):
@@ -196,7 +230,6 @@ def parse_meanings(meaning_str):
     return results
 
 def get_word_meanings_list(word_data):
-    """返回所有释义的扁平列表（用于默写比对）"""
     meanings_str = word_data.get("meaning", "")
     parsed = parse_meanings(meanings_str)
     all_defs = []
@@ -217,7 +250,8 @@ def render_mindmap(word_data):
     antonyms = word_data.get("antonyms", "").split(",") if word_data.get("antonyms") else []
     word_family = word_data.get("word_family", "").split(",") if word_data.get("word_family") else []
     phrases = parse_phrases(word_data.get("phrases", ""))
-    important_phrases = [p for p in phrases if word_data.get("important_phrases", "") and p["en"] in word_data["important_phrases"]]
+    important_phrases_str = word_data.get("important_phrases", "")
+    important_phrases = [p.strip() for p in important_phrases_str.split(",") if p.strip()] if important_phrases_str else []
     
     st.markdown(f'<div class="big-word">{word}</div>', unsafe_allow_html=True)
     if phonetic:
@@ -229,21 +263,19 @@ def render_mindmap(word_data):
     with st.container():
         st.markdown('<div class="mindmap-box">', unsafe_allow_html=True)
         
-        # 词族
         if word_family:
             st.markdown('<div class="mindmap-title">🌳 词族变形</div>', unsafe_allow_html=True)
             fam_html = ''.join([f'<span class="mindmap-item mindmap-family">{f.strip()}</span>' for f in word_family if f.strip()])
             st.markdown(fam_html, unsafe_allow_html=True)
         
-        # 短语
         if phrases:
             st.markdown('<div class="mindmap-title" style="margin-top:15px;">🔗 短语搭配</div>', unsafe_allow_html=True)
             for p in phrases:
-                imp_class = "mindmap-phrase" if any(ip["en"]==p["en"] for ip in important_phrases) else "mindmap-item"
-                star = '<span class="phrase-important">必背</span>' if any(ip["en"]==p["en"] for ip in important_phrases) else ''
+                is_imp = p["en"] in important_phrases
+                imp_class = "mindmap-phrase" if is_imp else "mindmap-item"
+                star = '<span class="phrase-important">必背</span>' if is_imp else ''
                 st.markdown(f'<span class="mindmap-item {imp_class}"><b>{p["en"]}</b> {p["zh"]}{star}</span>', unsafe_allow_html=True)
         
-        # 近义词/反义词
         col1, col2 = st.columns(2)
         with col1:
             if synonyms:
@@ -256,14 +288,12 @@ def render_mindmap(word_data):
                 ant_html = ''.join([f'<span class="mindmap-item">{a.strip()}</span>' for a in antonyms if a.strip()])
                 st.markdown(ant_html, unsafe_allow_html=True)
         
-        # 例句
         if example:
             st.markdown('<div class="mindmap-title" style="margin-top:15px;">📝 例句</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="mindmap-item mindmap-example"><b>EN:</b> {example}</div>', unsafe_allow_html=True)
             if example_zh:
                 st.markdown(f'<div class="mindmap-item mindmap-example"><b>中文:</b> {example_zh}</div>', unsafe_allow_html=True)
         
-        # 记忆技巧
         if memory_tip:
             st.markdown('<div class="mindmap-title" style="margin-top:15px;">💡 记忆法</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="mindmap-item" style="background:{ "#2a4a2a" if st.session_state.night_mode else "#e8f5e9" };">{memory_tip}</div>', unsafe_allow_html=True)
@@ -276,8 +306,6 @@ update_streak(data)
 words = data["words"]
 progress = data["progress"]
 mistake_dict = data["mistake_book"]
-mastered_records = data.get("mastered_records", {})
-perfect_words = set(data.get("perfect_words", []))
 
 if not st.session_state.trans_bank:
     st.session_state.trans_bank = load_trans_bank()
@@ -293,7 +321,7 @@ st.sidebar.markdown(f"""
 - ⏳ 待复习: {len(due_normal)+len(due_mistake)}
 - 📕 错题本: {len(mistake_dict)}
 - 🔥 连续: {data['user_stats']['streak']} 天
-- 🏆 完美掌握: {len(perfect_words)}
+- 🏆 完美掌握: {len(st.session_state.perfect_words)}
 """)
 if st.sidebar.button("🌙 夜间模式" if not st.session_state.night_mode else "☀️ 日间模式"):
     st.session_state.night_mode = not st.session_state.night_mode
@@ -301,14 +329,13 @@ if st.sidebar.button("🌙 夜间模式" if not st.session_state.night_mode else
 
 # ---------- 主界面 ----------
 st.title("🐢 笨鸟四级 · 思维导图记忆")
-tabs = st.tabs(["📚 今日复习", "✍️ 综合默写", "📕 错题本", "📋 翻译题库", "🌐 翻译练习", "📅 完美掌握日历", "➕ 导入", "📖 词库"])
+tabs = st.tabs(["📚 今日复习", "✍️ 综合默写", "📕 错题本", "📋 翻译题库", "🌐 翻译练习", "🏆 完美掌握", "➕ 导入", "📖 词库", "📊 学习数据"])
 
-# ==================== 标签页0：今日复习（含中文默写） ====================
+# ==================== 标签页0：今日复习 ====================
 with tabs[0]:
     st.header("📅 智能复习")
     
     all_due = due_mistake + due_normal
-    # 去重
     seen = set()
     all_due = [w for w in all_due if w and w["word"] not in seen and not seen.add(w["word"])]
     
@@ -330,7 +357,6 @@ with tabs[0]:
             cur = st.session_state.review_list[idx]
             word_str = cur["word"]
             
-            # 中文默写模式
             if not st.session_state.show_answer and not st.session_state.meaning_test_active:
                 st.markdown(f'<div class="big-word">{word_str}</div>', unsafe_allow_html=True)
                 if cur.get("phonetic"):
@@ -344,25 +370,21 @@ with tabs[0]:
                     if st.button("提交", key=f"submit_meaning_{idx}"):
                         correct_defs = get_word_meanings_list(cur)
                         user_defs = [d.strip() for d in user_meaning.replace("；", ";").split(";") if d.strip()]
-                        # 简单比对：只要有交集就算部分正确，但要求覆盖大部分
                         matched = sum(1 for u in user_defs if any(u in c or c in u for c in correct_defs))
+                        data2 = load_data()
                         if matched >= max(1, len(correct_defs) * 0.6):
                             st.session_state.meaning_test_result = "correct"
-                            # 正确：记录连续正确，可能移出错题本，加入完美掌握
-                            data2 = load_data()
                             record_correct_in_mistake(data2, word_str)
-                            # 增加 repetition 计数
                             prog = data2["progress"].get(word_str, init_progress(word_str, cur.get("difficulty",3)))
                             prog["repetitions"] += 1
                             data2["progress"][word_str] = prog
-                            # 完美单词判断：正确3次以上
+                            # 完美单词判断
                             if prog["repetitions"] >= 3:
-                                if word_str not in data2.get("perfect_words", []):
-                                    data2["perfect_words"] = data2.get("perfect_words", []) + [word_str]
+                                if word_str not in st.session_state.perfect_words:
+                                    add_to_perfect(word_str)
                             save_data(data2)
                         else:
                             st.session_state.meaning_test_result = "wrong"
-                            data2 = load_data()
                             add_to_mistake_book(data2, word_str)
                             save_data(data2)
                         st.session_state.meaning_test_active = True
@@ -372,13 +394,11 @@ with tabs[0]:
                         st.session_state.show_answer = True
                         st.rerun()
             
-            # 显示思维导图（答对或点击显示答案后）
             if st.session_state.show_answer or (st.session_state.meaning_test_active and st.session_state.meaning_test_result == "correct"):
                 if st.session_state.meaning_test_result == "correct":
                     st.success("✅ 释义正确！")
                 render_mindmap(cur)
                 
-                # 记忆反馈
                 st.markdown("---")
                 st.subheader("🤔 掌握程度")
                 q1, q2, q3, q4 = st.columns(4)
@@ -396,6 +416,9 @@ with tabs[0]:
                             add_to_mistake_book(data2, w)
                         elif quality >= 2:
                             record_correct_in_mistake(data2, w)
+                            if prog["repetitions"] >= 3:
+                                if w not in st.session_state.perfect_words:
+                                    add_to_perfect(w)
                         save_data(data2)
                         st.session_state.show_answer = False
                         st.session_state.meaning_test_active = False
@@ -425,7 +448,7 @@ with tabs[0]:
                 st.session_state.review_list = []
                 st.rerun()
 
-# ==================== 标签页1：综合默写（单词+短语混合） ====================
+# ==================== 标签页1：综合默写 ====================
 with tabs[1]:
     st.header("✍️ 综合默写 (单词/短语混合)")
     
@@ -433,7 +456,6 @@ with tabs[1]:
         st.warning("请先导入单词")
     else:
         if st.button("🔄 换一组") or "dict_items" not in st.session_state:
-            # 构建默写项：单词英文、单词中文、短语英文、短语中文
             items = []
             for w in random.sample(words, min(10, len(words))):
                 items.append({"type": "word_spell", "word": w["word"], "meaning": w["meaning"], "data": w})
@@ -468,7 +490,7 @@ with tabs[1]:
                     st.markdown(f"**短语中文**: {item['phrase_zh']}")
                     user_in = st.text_input("输入英文短语", key=f"pe_{idx}")
                     answer = item["phrase_en"]
-                else:  # phrase_zh
+                else:
                     st.markdown(f"**英文短语**: {item['phrase_en']}")
                     user_in = st.text_input("输入中文释义", key=f"pz_{idx}")
                     answer = item["phrase_zh"]
@@ -480,23 +502,25 @@ with tabs[1]:
                         if item["type"] in ["word_spell", "phrase_en"]:
                             correct = user_in.strip().lower() == answer.lower()
                         else:
-                            # 中文比对宽松
                             correct = any(u in answer or answer in u for u in user_in.split(';'))
                         
+                        data2 = load_data()
                         if correct:
                             st.session_state.dict_correct += 1
                             st.session_state.dict_show_res = True
                             st.session_state.dict_res_correct = True
-                            # 记录正确
-                            data2 = load_data()
                             record_correct_in_mistake(data2, item["data"]["word"])
-                            save_data(data2)
+                            prog = data2["progress"].get(item["data"]["word"], init_progress(item["data"]["word"], item["data"].get("difficulty",3)))
+                            prog["repetitions"] += 1
+                            data2["progress"][item["data"]["word"]] = prog
+                            if prog["repetitions"] >= 3:
+                                if item["data"]["word"] not in st.session_state.perfect_words:
+                                    add_to_perfect(item["data"]["word"])
                         else:
                             st.session_state.dict_show_res = True
                             st.session_state.dict_res_correct = False
-                            data2 = load_data()
                             add_to_mistake_book(data2, item["data"]["word"])
-                            save_data(data2)
+                        save_data(data2)
                         st.session_state.user_ans = user_in
                         st.rerun()
                 with c2:
@@ -563,7 +587,6 @@ with tabs[2]:
 with tabs[3]:
     st.header("📋 翻译题库")
     st.markdown("Excel格式：`中文原文`, `参考译文`")
-    # 导入逻辑略（同前）
     up = st.file_uploader("上传Excel", type=["xlsx"])
     if up:
         try:
@@ -602,13 +625,11 @@ with tabs[4]:
         st.markdown(f"**中文**: {q['chinese']}")
         user_trans = st.text_area("你的翻译", height=150)
         if st.button("提交评分"):
-            # 简化评分，主要看单词覆盖
             ref_words = set(extract_english_words(q['reference']))
             user_words = set(extract_english_words(user_trans))
             score = len(ref_words & user_words) / max(1, len(ref_words)) * 15
             st.session_state.trans_score_detail = {"total": int(score), "matched": ref_words & user_words}
             st.session_state.trans_submitted = True
-            # 错词加入错题本
             data2 = load_data()
             for w in user_words:
                 if w not in ref_words:
@@ -621,56 +642,54 @@ with tabs[4]:
             st.markdown(f"### 得分: {d['total']}/15")
             st.markdown(f"正确词汇: {', '.join(d['matched'])}")
 
-# ==================== 标签页5：完美掌握日历 ====================
+# ==================== 标签页5：完美掌握 ====================
 with tabs[5]:
-    st.header("📅 完美掌握·每日复习")
+    st.header("🏆 完美掌握 · 每日巩固")
     
-    # 将完美单词按日期分组 (简单模拟：假设每次正确加入当天)
-    # 实际需记录日期，这里用mastered_records字段：{date: [words]}
-    today = datetime.now().date()
-    
-    # 显示日历
-    st.subheader("学习日历")
-    # 生成最近30天
-    days = []
-    for i in range(30):
-        d = today - timedelta(days=i)
-        days.append(d)
-    days.reverse()
-    
-    cols = st.columns(7)
-    for i, d in enumerate(days):
-        day_str = d.isoformat()
-        words_today = mastered_records.get(day_str, [])
-        completed = len(words_today) > 0
-        with cols[i % 7]:
-            btn_label = f"{d.month}/{d.day}"
-            if completed:
-                btn_label += " ✅"
-            if st.button(btn_label, key=f"cal_{day_str}"):
-                st.session_state.current_day_review = day_str
-                st.session_state.day_review_mode = "mixed"
-                st.session_state.day_review_idx = 0
-                st.session_state.day_review_correct = 0
-                # 生成该天所有单词的四种默写
-                items = []
-                for w_str in words_today:
-                    w_obj = next((x for x in words if x["word"] == w_str), None)
-                    if w_obj:
-                        items.append({"type": "word_spell", "word": w_str, "data": w_obj})
-                        items.append({"type": "word_meaning", "word": w_str, "data": w_obj})
-                        phrases = parse_phrases(w_obj.get("phrases", ""))
-                        for p in phrases[:1]:
-                            items.append({"type": "phrase_en", "phrase": p, "data": w_obj})
-                            items.append({"type": "phrase_zh", "phrase": p, "data": w_obj})
-                random.shuffle(items)
-                st.session_state.day_review_items = items
-                st.rerun()
+    if not st.session_state.learning_start_date:
+        st.info("还没有完美掌握的单词，继续学习吧！")
+    else:
+        # 获取所有有掌握记录的日期，并排序
+        dates = sorted(st.session_state.mastered_records.keys())
+        if not dates:
+            st.info("暂无完美掌握记录")
+        else:
+            st.markdown("### 📅 选择复习日期")
+            # 计算每个日期对应的天数编号
+            start_date = datetime.fromisoformat(st.session_state.learning_start_date).date()
+            
+            cols = st.columns(min(len(dates), 5))
+            for i, date_str in enumerate(dates):
+                date_obj = datetime.fromisoformat(date_str).date()
+                day_num = (date_obj - start_date).days + 1
+                with cols[i % 5]:
+                    if st.button(f"DAY {day_num}", key=f"day_{date_str}"):
+                        st.session_state.current_day_review = date_str
+                        st.session_state.day_review_idx = 0
+                        st.session_state.day_review_correct = 0
+                        # 生成该天所有单词的四种默写
+                        words_today = st.session_state.mastered_records.get(date_str, [])
+                        items = []
+                        for w_str in words_today:
+                            w_obj = next((x for x in words if x["word"] == w_str), None)
+                            if w_obj:
+                                items.append({"type": "word_spell", "word": w_str, "data": w_obj})
+                                items.append({"type": "word_meaning", "word": w_str, "data": w_obj})
+                                phrases = parse_phrases(w_obj.get("phrases", ""))
+                                for p in phrases[:1]:
+                                    items.append({"type": "phrase_en", "phrase": p, "data": w_obj})
+                                    items.append({"type": "phrase_zh", "phrase": p, "data": w_obj})
+                        random.shuffle(items)
+                        st.session_state.day_review_items = items
+                        st.rerun()
     
     # 当日复习界面
     if st.session_state.current_day_review:
         st.markdown("---")
-        st.subheader(f"📖 {st.session_state.current_day_review} 复习")
+        date_obj = datetime.fromisoformat(st.session_state.current_day_review).date()
+        start_date = datetime.fromisoformat(st.session_state.learning_start_date).date()
+        day_num = (date_obj - start_date).days + 1
+        st.subheader(f"📖 DAY {day_num} 复习")
         items = st.session_state.day_review_items
         idx = st.session_state.day_review_idx
         
@@ -707,19 +726,12 @@ with tabs[5]:
                     st.error(f"错误，答案: {answer}")
                 st.session_state.day_review_idx += 1
                 if st.session_state.day_review_idx >= len(items):
-                    # 完成
                     st.balloons()
                     st.markdown('<div class="reward-box"><h2>🎉 恭喜！</h2><p>你已完成今日完美单词复习！</p></div>', unsafe_allow_html=True)
-                    # 记录完成
-                    data2 = load_data()
-                    if "mastered_records" not in data2: data2["mastered_records"] = {}
-                    if st.session_state.current_day_review not in data2["mastered_records"]:
-                        data2["mastered_records"][st.session_state.current_day_review] = []
-                    save_data(data2)
                 st.rerun()
         else:
             st.success("复习完成")
-            if st.button("返回日历"):
+            if st.button("返回"):
                 st.session_state.current_day_review = None
                 st.rerun()
 
@@ -778,3 +790,20 @@ with tabs[7]:
         st.dataframe(df[["word","meaning","pos"]])
     else:
         st.info("暂无单词")
+
+# ==================== 标签页8：学习数据 ====================
+with tabs[8]:
+    st.header("📊 详细学习数据")
+    data = load_data()
+    st.markdown(f"- 总单词量：{len(words)}")
+    st.markdown(f"- 错题本单词数：{len(data.get('mistake_book', {}))}")
+    st.markdown(f"- 连续打卡：{data['user_stats']['streak']} 天")
+    st.markdown(f"- 总学习天数：{data['user_stats']['total_days']} 天")
+    st.markdown(f"- 翻译题库：{len(st.session_state.trans_bank)} 题")
+    st.markdown(f"- 完美掌握单词：{len(st.session_state.perfect_words)}")
+    if words:
+        total_reviews = sum(p.get("repetitions", 0) for p in data["progress"].values())
+        st.markdown(f"- 累计复习次数：{total_reviews}")
+    if st.session_state.learning_start_date:
+        st.markdown(f"- 开始学习日期：{st.session_state.learning_start_date}")
+```
